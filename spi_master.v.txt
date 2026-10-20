@@ -1,0 +1,118 @@
+module spi_master #(
+    parameter CLK_DIV = 4
+)(
+    input wire clk,
+    input wire rst_n,
+    input wire start,
+    input wire [7:0] tx_data,
+    output reg [7:0] rx_data,
+    output reg done,
+    output reg sclk,
+    output reg mosi,
+    input wire miso,
+    output reg cs_n
+);
+
+    localparam IDLE = 2'd0;
+    localparam LOAD = 2'd1;
+    localparam SHIFT = 2'd2;
+    localparam DONE = 2'd3;
+
+    localparam DIV_WIDTH = (CLK_DIV <= 1) ? 1 : $clog2(CLK_DIV);
+
+    reg [1:0] state;
+    reg [2:0] bit_cnt;
+    reg [7:0] shift_tx;
+    reg [7:0] shift_rx;
+    reg [DIV_WIDTH-1:0] div_cnt;
+    reg sclk_en;
+
+    wire sclk_rise = sclk_en && (div_cnt == CLK_DIV-1) && !sclk;
+    wire sclk_fall = sclk_en && (div_cnt == CLK_DIV-1) && sclk;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            div_cnt <= 0;
+            sclk <= 1'b0;
+        end else if (sclk_en) begin
+            if (div_cnt == CLK_DIV-1) begin
+                div_cnt <= 0;
+                sclk <= ~sclk;
+            end else begin
+                div_cnt <= div_cnt + 1'b1;
+            end
+        end else begin
+            div_cnt <= 0;
+            sclk <= 1'b0;
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            state <= IDLE;
+            bit_cnt <= 0;
+            shift_tx <= 0;
+            shift_rx <= 0;
+            rx_data <= 0;
+            done <= 0;
+            sclk_en <= 0;
+            mosi <= 0;
+            cs_n <= 1;
+        end else begin
+            done <= 1'b0;
+
+            case (state)
+                IDLE: begin
+                    sclk_en <= 1'b0;
+                    cs_n <= 1'b1;
+                    mosi <= 1'b0;
+
+                    if (start) begin
+                        shift_tx <= tx_data;
+                        shift_rx <= 8'b0;
+                        bit_cnt <= 3'd7;
+                        cs_n <= 1'b0;
+                        sclk_en <= 1'b1;
+                        state <= LOAD;
+                    end
+                end
+
+                LOAD: begin
+                    mosi <= shift_tx[7];
+                    state <= SHIFT;
+                end
+
+                SHIFT: begin
+                    if (sclk_rise) begin
+                        shift_rx <= {shift_rx[6:0], miso};
+                    end
+
+                    if (sclk_fall) begin
+                        if (bit_cnt == 0) begin
+                            state <= DONE;
+                        end else begin
+                            bit_cnt <= bit_cnt - 1'b1;
+                            shift_tx <= {shift_tx[6:0], 1'b0};
+                            mosi <= shift_tx[6];
+                        end
+                    end
+                end
+
+                DONE: begin
+                    sclk_en <= 1'b0;
+                    cs_n <= 1'b1;
+                    rx_data <= shift_rx;
+                    done <= 1'b1;
+                    state <= IDLE;
+                end
+
+                default: begin
+                    state <= IDLE;
+                    sclk_en <= 1'b0;
+                    cs_n <= 1'b1;
+                end
+            endcase
+        end
+    end
+
+endmodule
